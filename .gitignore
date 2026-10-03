@@ -1,0 +1,44 @@
+# Terraform state files
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.lock.hcl
+
+# Secrets - never commit these
+k8s/database/secret.yaml
+terraform/**/*.tfvars
+*.pem
+*.key
+.env
+.env.*
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Go
+vendor/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

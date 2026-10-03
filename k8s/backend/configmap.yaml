@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: three-tier
+data:
+  backend_url: "http://backend-service:8080"
+  db_port: "3306"
+  db_name: "three_tier_db"
+  app_env: "production"

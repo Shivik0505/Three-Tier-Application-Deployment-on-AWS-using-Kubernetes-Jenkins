@@ -1,0 +1,140 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION        = 'ap-south-1'
+        AWS_ACCOUNT_ID    = credentials('aws-account-id')
+        ECR_REGISTRY      = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        FRONTEND_IMAGE    = "three-tier-frontend"
+        BACKEND_IMAGE     = "three-tier-backend"
+        EKS_CLUSTER_NAME  = "three-tier-cluster"
+        GIT_REPO          = "https://github.com/<YOUR_USERNAME>/three-tier-k8s.git"
+        NAMESPACE         = "three-tier"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: "${GIT_REPO}"
+            }
+        }
+
+        stage('Run Tests') {
+            parallel {
+                stage('Frontend Tests') {
+                    steps {
+                        dir('OT-Microservices/frontend') {
+                            sh 'npm install'
+                            sh 'npm test -- --watchAll=false'
+                        }
+                    }
+                }
+                stage('Backend Tests') {
+                    steps {
+                        dir('OT-Microservices/employee') {
+                            sh 'go test ./...'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            parallel {
+                stage('Build Frontend') {
+                    steps {
+                        dir('OT-Microservices/frontend') {
+                            sh """
+                                docker build -t ${FRONTEND_IMAGE}:${BUILD_NUMBER} .
+                                docker tag ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${ECR_REGISTRY}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                                docker tag ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${ECR_REGISTRY}/${FRONTEND_IMAGE}:latest
+                            """
+                        }
+                    }
+                }
+                stage('Build Backend') {
+                    steps {
+                        dir('OT-Microservices/employee') {
+                            sh """
+                                docker build -t ${BACKEND_IMAGE}:${BUILD_NUMBER} .
+                                docker tag ${BACKEND_IMAGE}:${BUILD_NUMBER} ${ECR_REGISTRY}/${BACKEND_IMAGE}:${BUILD_NUMBER}
+                                docker tag ${BACKEND_IMAGE}:${BUILD_NUMBER} ${ECR_REGISTRY}/${BACKEND_IMAGE}:latest
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'aws-credentials') {
+                    sh """
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                        docker login --username AWS --password-stdin ${ECR_REGISTRY}
+
+                        docker push ${ECR_REGISTRY}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/${FRONTEND_IMAGE}:latest
+                        docker push ${ECR_REGISTRY}/${BACKEND_IMAGE}:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/${BACKEND_IMAGE}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Update K8s Manifests') {
+            steps {
+                sh """
+                    sed -i 's|<AWS_ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g' k8s/frontend/deployment.yaml
+                    sed -i 's|<AWS_REGION>|${AWS_REGION}|g'         k8s/frontend/deployment.yaml
+                    sed -i 's|<AWS_ACCOUNT_ID>|${AWS_ACCOUNT_ID}|g' k8s/backend/deployment.yaml
+                    sed -i 's|<AWS_REGION>|${AWS_REGION}|g'         k8s/backend/deployment.yaml
+                    sed -i 's|:latest|:${BUILD_NUMBER}|g'            k8s/frontend/deployment.yaml
+                    sed -i 's|:latest|:${BUILD_NUMBER}|g'            k8s/backend/deployment.yaml
+                """
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                withAWS(region: "${AWS_REGION}", credentials: 'aws-credentials') {
+                    sh """
+                        aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}
+
+                        kubectl apply -f k8s/namespace.yaml
+                        kubectl apply -f k8s/database/
+                        kubectl apply -f k8s/backend/
+                        kubectl apply -f k8s/frontend/
+                        kubectl apply -f k8s/ingress/
+
+                        kubectl rollout status deployment/frontend -n ${NAMESPACE}
+                        kubectl rollout status deployment/backend  -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh """
+                    kubectl get pods      -n ${NAMESPACE}
+                    kubectl get services  -n ${NAMESPACE}
+                    kubectl get ingress   -n ${NAMESPACE}
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Deployment successful! Build #${BUILD_NUMBER}"
+        }
+        failure {
+            echo "❌ Deployment failed. Check logs above."
+        }
+        always {
+            sh 'docker image prune -f'
+        }
+    }
+}
